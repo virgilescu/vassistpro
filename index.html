@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>VAssist PRO 7.0</title>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@latest"></script>
+
+<style>
+body{
+font-family:Arial;
+margin:0;
+background:#f0fdf4;
+position:relative;
+overflow-x:hidden;
+}
+body::before{
+content:"";
+position:fixed;
+top:50%;
+left:50%;
+transform:translate(-50%,-50%);
+width:15%;
+height:15%;
+background:url('https://i.imgur.com/LG1XAHX.png') no-repeat center;
+background-size:contain;
+opacity:0.55;
+z-index:-1;
+}
+.header{
+background:linear-gradient(90deg,#007f3d,#00b050);
+color:white;
+padding:15px;
+text-align:center;
+font-size:22px;
+font-weight:bold;
+}
+.container{padding:20px;}
+.hidden{display:none;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:20px;}
+.box{padding:30px;color:white;font-weight:bold;text-align:center;border-radius:10px;cursor:pointer;font-size:18px;}
+.green{background:#28a745;}
+.yellow{background:#ffc107;color:black;}
+.orange{background:#fd7e14;}
+.red{background:#dc3545;}
+.card{background:white;padding:10px;margin:8px 0;border-radius:6px;border-left:5px solid #00a651;box-shadow:0 2px 5px rgba(0,0,0,0.1);}
+button{padding:8px;margin:5px 0;width:100%;border-radius:6px;border:none;background:#00a651;color:white;cursor:pointer;}
+input,select{padding:8px;margin:5px 0;width:100%;border-radius:6px;border:1px solid #ccc;}
+.qrbox{text-align:center;margin-top:15px;}
+
+/* SCANNER */
+#scannerContainer{
+position:relative;
+width:100%;
+max-width:500px;
+margin-top:10px;
+border-radius:10px;
+overflow:hidden;
+background:black;
+}
+#videoPreview{
+width:100%;
+height:auto;
+display:block;
+}
+#scanFrame{
+position:absolute;
+top:20%;
+left:10%;
+width:80%;
+height:60%;
+border:3px solid #00ff00;
+box-shadow:0 0 15px #00ff00;
+border-radius:10px;
+pointer-events:none;
+}
+#scanLine{
+position:absolute;
+left:10%;
+width:80%;
+height:2px;
+background:#00ff00;
+animation:scanMove 2s infinite;
+}
+@keyframes scanMove{
+0%{top:20%;}
+50%{top:80%;}
+100%{top:20%;}
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">VAssist PRO 7.0</div>
+
+<div class="container">
+
+<h3>👤 Operator</h3>
+<input type="text" id="operator" placeholder="Ex: Petrica">
+
+<div id="menu" class="grid">
+<div class="box green" onclick="openMenu('alerte')">⚠ Liste Alerte</div>
+<div class="box yellow" onclick="openMenu('istoric')">🗂 Istoric</div>
+<div class="box orange" onclick="openMenu('palet')">🏷 Creare Palet</div>
+<div class="box red" onclick="openMenu('scanQR')">📷 Scanează QR</div>
+</div>
+
+<!-- PALET -->
+<div id="palet" class="hidden">
+<button onclick="backToMain()">⬅ Revenire</button>
+
+Cod Produs:
+<input id="codPalet">
+<button onclick="startBarcodeScanner()">📷 Scanează Cod EAN</button>
+
+<div id="scannerContainer" class="hidden">
+<video id="videoPreview" autoplay playsinline></video>
+<div id="scanFrame"></div>
+<div id="scanLine"></div>
+</div>
+
+Nume Produs:
+<input id="numePalet">
+
+DLC:
+<input type="date" id="dlcPalet">
+
+Categorie:
+<select id="categoriePalet">
+<option>APLS</option>
+<option>AMBIENT</option>
+<option>FRESH</option>
+<option>CONGELATE</option>
+<option>PERSONALIZATA</option>
+</select>
+
+<button onclick="adaugaPalet()">Adaugă Produs</button>
+<button onclick="reseteazaPalet()" style="background:#dc3545;">🗑 Resetează Palet</button>
+
+<div id="listaPalet"></div>
+
+<button onclick="genereazaQR()">Generează QR</button>
+<button onclick="exportExcel()">Export Excel</button>
+<button onclick="exportPDF()">Export PDF</button>
+
+<div class="qrbox" id="qr"></div>
+</div>
+
+</div>
+
+<script>
+
+let produse=JSON.parse(localStorage.getItem("produse"))||[];
+let paletProduse=[];
+let currentStream=null;
+let beepAudio=new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
+
+/* NAV */
+function openMenu(id){
+document.getElementById("menu").style.display="none";
+document.getElementById(id).classList.remove("hidden");
+}
+function backToMain(){
+document.querySelectorAll("#palet,#alerte,#istoric,#scanQR").forEach(s=>{
+if(s) s.classList.add("hidden");
+});
+document.getElementById("menu").style.display="grid";
+stopScanner();
+}
+
+/* VALIDARE EAN */
+function validEAN13(code){
+if(!/^\d{13}$/.test(code)) return false;
+let sum=0;
+for(let i=0;i<12;i++){
+sum+=parseInt(code[i])*(i%2===0?1:3);
+}
+let check=(10-(sum%10))%10;
+return check===parseInt(code[12]);
+}
+
+/* SCANNER */
+async function startBarcodeScanner(){
+
+document.getElementById("scannerContainer").classList.remove("hidden");
+
+try{
+currentStream=await navigator.mediaDevices.getUserMedia({
+video:{facingMode:{ideal:"environment"}}
+});
+const video=document.getElementById("videoPreview");
+video.srcObject=currentStream;
+
+const codeReader=new ZXing.BrowserMultiFormatReader();
+
+codeReader.decodeFromVideoElement(video,(result,err)=>{
+if(result){
+let cod=result.text;
+if(!validEAN13(cod)){
+alert("Cod invalid EAN-13");
+return;
+}
+document.getElementById("codPalet").value=cod;
+beepAudio.play();
+if(navigator.vibrate) navigator.vibrate(200);
+stopScanner();
+alert("Cod scanat corect!");
+}
+});
+
+}catch(e){
+alert("Eroare cameră: "+e);
+}
+}
+
+function stopScanner(){
+if(currentStream){
+currentStream.getTracks().forEach(track=>track.stop());
+currentStream=null;
+}
+document.getElementById("scannerContainer").classList.add("hidden");
+}
+
+/* ADAUGARE */
+function adaugaPalet(){
+if(!operator.value){alert("Introduceți operator!");return;}
+let cod=codPalet.value.trim();
+if(!validEAN13(cod)){alert("Cod invalid!");return;}
+if(!numePalet.value||!dlcPalet.value){alert("Completați toate câmpurile!");return;}
+
+let p={cod:cod,nume:numePalet.value,dlc:dlcPalet.value,categorie:categoriePalet.value};
+paletProduse.push(p);
+produse.push(p);
+localStorage.setItem("produse",JSON.stringify(produse));
+
+listaPalet.innerHTML+=`
+<div class="card">
+<b>Cod:</b> ${p.cod}<br>
+<b>Nume:</b> ${p.nume}<br>
+<b>Categorie:</b> ${p.categorie}<br>
+<b>DLC:</b> ${p.dlc}
+</div>`;
+
+codPalet.value="";
+numePalet.value="";
+dlcPalet.value="";
+}
+
+/* RESET */
+function reseteazaPalet(){
+if(!confirm("Sigur ștergi paletul?"))return;
+if(!confirm("Confirmare finală?"))return;
+paletProduse=[];
+listaPalet.innerHTML="";
+}
+
+/* EXPORT PDF */
+function exportPDF(){
+const { jsPDF }=window.jspdf;
+let doc=new jsPDF({orientation:"landscape"});
+let y=20;
+doc.text("VAssist Export",15,y);y+=10;
+doc.text("Operator: "+operator.value,15,y);y+=10;
+doc.text("Data: "+new Date().toLocaleString(),15,y);y+=15;
+doc.text("Cod",15,y);
+doc.text("Nume",70,y);
+doc.text("Categorie",130,y);
+doc.text("DLC",200,y);
+y+=8;
+paletProduse.forEach(p=>{
+doc.text(p.cod,15,y);
+doc.text(p.nume,70,y);
+doc.text(p.categorie,130,y);
+doc.text(p.dlc,200,y);
+y+=8;
+});
+doc.save("VAssist_Palet.pdf");
+}
+
+/* EXPORT EXCEL */
+function exportExcel(){
+let wb=XLSX.utils.book_new();
+let ws_data=[["Operator",operator.value],["Data",new Date().toLocaleString()],[],["Cod","Nume","Categorie","DLC"]];
+paletProduse.forEach(p=>ws_data.push([p.cod,p.nume,p.categorie,p.dlc]));
+let ws=XLSX.utils.aoa_to_sheet(ws_data);
+ws['!pageSetup']={orientation:"landscape"};
+XLSX.utils.book_append_sheet(wb,ws,"Palet");
+XLSX.writeFile(wb,"VAssist_Palet.xlsx");
+}
+
+</script>
+</body>
+</html>
